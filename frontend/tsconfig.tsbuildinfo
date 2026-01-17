@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/helptext.ts","./src/main.tsx","./src/vite-env.d.ts","./src/components/driverspanel.tsx","./src/components/hoverhelp.tsx","./src/components/indicatorcard.tsx","./src/components/linechartpanel.tsx"],"version":"5.9.3"}
