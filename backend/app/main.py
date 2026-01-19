@@ -3,12 +3,14 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+from pathlib import Path
 from collections.abc import Iterator
 from ipaddress import ip_address
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from openai import OpenAIError
 from sqlalchemy import func, text as sa_text
 from sqlalchemy import select
@@ -18,7 +20,7 @@ from .config import settings
 from .db import get_db, init_db
 from .ingest import ingest_and_compute
 from .llm import explain_snapshot, explain_snapshot_stream
-from .models import Observation, PageView
+from .models import LlmExplanation, Observation, PageView
 from .snapshot_logic import build_snapshot, synthetic_liquidity_delta_points
 from .schemas import SeriesPoint, SnapshotOut
 
@@ -41,6 +43,31 @@ def _startup():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+def _snapshot_hash(snapshot: SnapshotOut) -> str:
+    # Deterministic hash for caching: based on the serialized snapshot content.
+    payload = snapshot.model_dump(mode="json")
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _get_llm_cache(db: Session, *, snapshot_hash: str) -> LlmExplanation | None:
+    return db.execute(
+        select(LlmExplanation).where(LlmExplanation.snapshot_hash == snapshot_hash)
+    ).scalar_one_or_none()
+
+
+def _upsert_llm_cache(db: Session, *, asof: dt.date, snapshot_hash: str, text: str) -> None:
+    row = _get_llm_cache(db, snapshot_hash=snapshot_hash)
+    if row is None:
+        db.add(LlmExplanation(asof=asof, snapshot_hash=snapshot_hash, text=text))
+        db.commit()
+        return
+
+    row.asof = asof
+    row.text = text
+    db.commit()
 
 
 def _ip_prefix(addr: str) -> str | None:
@@ -117,6 +144,24 @@ def get_snapshot(asof: dt.date | None = None, db: Session = Depends(get_db)):
 @app.post("/api/ingest/run")
 def run_ingest():
     return ingest_and_compute()
+
+
+@app.get("/api/chat/explain/cached")
+def chat_explain_cached(asof: dt.date | None = None, db: Session = Depends(get_db)):
+    """Return cached explanation if available; never calls the LLM."""
+    snapshot = get_snapshot(asof=asof, db=db)
+    if not snapshot.regime:
+        raise HTTPException(status_code=400, detail="No regime computed yet. Run ingest first.")
+
+    shash = _snapshot_hash(snapshot)
+    row = _get_llm_cache(db, snapshot_hash=shash)
+    return {
+        "asof": str(snapshot.asof),
+        "cached": row is not None,
+        "text": row.text if row else None,
+        "snapshot_hash": shash,
+        "updated_at": row.updated_at.isoformat() if row else None,
+    }
 
 
 @app.post("/api/telemetry/pageview")
@@ -221,11 +266,23 @@ def telemetry_stats(days: int = 30, db: Session = Depends(get_db)):
 
 
 @app.post("/api/chat/explain")
-def chat_explain(asof: dt.date | None = None, db: Session = Depends(get_db)):
+def chat_explain(asof: dt.date | None = None, force: bool = False, db: Session = Depends(get_db)):
     snapshot = get_snapshot(asof=asof, db=db)
 
     if not snapshot.regime:
         raise HTTPException(status_code=400, detail="No regime computed yet. Run ingest first.")
+
+    shash = _snapshot_hash(snapshot)
+    if not force:
+        cached = _get_llm_cache(db, snapshot_hash=shash)
+        if cached is not None:
+            return {
+                "asof": str(snapshot.asof),
+                "text": cached.text,
+                "cached": True,
+                "snapshot_hash": shash,
+                "updated_at": cached.updated_at.isoformat(),
+            }
 
     prompt = (
         "请解释今天的宏观监控快照，并给出为什么选择该仓位模板。\n"
@@ -241,17 +298,42 @@ def chat_explain(asof: dt.date | None = None, db: Session = Depends(get_db)):
 
     try:
         llm_text = explain_snapshot(prompt)
+        _upsert_llm_cache(db, asof=snapshot.asof, snapshot_hash=shash, text=llm_text)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    return {"asof": str(snapshot.asof), "text": llm_text}
+    return {
+        "asof": str(snapshot.asof),
+        "text": llm_text,
+        "cached": False,
+        "snapshot_hash": shash,
+        "updated_at": None,
+    }
 
 
 @app.get("/api/chat/explain/stream")
-def chat_explain_stream(asof: dt.date | None = None, db: Session = Depends(get_db)):
+def chat_explain_stream(asof: dt.date | None = None, force: bool = False, db: Session = Depends(get_db)):
     snapshot = get_snapshot(asof=asof, db=db)
     if not snapshot.regime:
         raise HTTPException(status_code=400, detail="No regime computed yet. Run ingest first.")
+
+    shash = _snapshot_hash(snapshot)
+    if not force:
+        cached = _get_llm_cache(db, snapshot_hash=shash)
+        if cached is not None:
+            def _iter_cached() -> Iterator[str]:
+                payload = json.dumps({"delta": cached.text, "cached": True}, ensure_ascii=False)
+                yield f"data: {payload}\n\n"
+                yield "data: {\"done\": true}\n\n"
+
+            return StreamingResponse(
+                _iter_cached(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
 
     prompt = (
         "请解释今天的宏观监控快照，并给出为什么选择该仓位模板。\n"
@@ -267,10 +349,15 @@ def chat_explain_stream(asof: dt.date | None = None, db: Session = Depends(get_d
     )
 
     def _iter_events() -> Iterator[str]:
+        buf: list[str] = []
         try:
             for delta in explain_snapshot_stream(prompt):
                 payload = json.dumps({"delta": delta}, ensure_ascii=False)
                 yield f"data: {payload}\n\n"
+                buf.append(delta)
+            full = "".join(buf)
+            if full.strip():
+                _upsert_llm_cache(db, asof=snapshot.asof, snapshot_hash=shash, text=full)
             yield "data: {\"done\": true}\n\n"
         except (OpenAIError, RuntimeError, ValueError) as e:
             payload = json.dumps({"error": str(e), "done": True}, ensure_ascii=False)
@@ -284,3 +371,9 @@ def chat_explain_stream(asof: dt.date | None = None, db: Session = Depends(get_d
             "Connection": "keep-alive",
         },
     )
+
+
+# If a built frontend exists (e.g., in Docker/ACA), serve it at '/'.
+_frontend_dist = Path(__file__).resolve().parent / "static"
+if _frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")

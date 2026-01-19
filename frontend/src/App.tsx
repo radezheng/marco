@@ -3,6 +3,7 @@ import { api, getOrCreateSessionId, IndicatorState, Snapshot } from './api'
 import { LineChartPanel } from './components/LineChartPanel'
 import { DriversPanel } from './components/DriversPanel.tsx'
 import { IndicatorCard } from './components/IndicatorCard.tsx'
+import { HoverHelp } from './components/HoverHelp'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -20,9 +21,37 @@ function stateLabel(s: string) {
   return '⚪'
 }
 
+function normalizeMarkdownish(input: string): string {
+  let s = input
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+
+  // If the text is double-escaped (shows literal "\\n"), normalize it.
+  if (s.includes('\\n')) {
+    s = s.replace(/\\n/g, '\n')
+  }
+
+  // Some models wrap the entire response in a single fenced code block.
+  // If so, strip the fence to render as regular Markdown.
+  const trimmed = s.trim()
+  const m = trimmed.match(/^```(?:markdown|md|text)?\s*\n([\s\S]*?)\n```\s*$/i)
+  if (m?.[1] != null) {
+    s = m[1]
+  }
+
+  // Common non-Markdown bullet styles.
+  s = s.replace(/^\s*•\s+/gm, '- ')
+
+  // Turn "1)" into Markdown ordered list "1.".
+  s = s.replace(/^(\s*)(\d+)\)\s+/gm, '$1$2. ')
+
+  return s
+}
+
 export function App() {
   const [snapshot, setSnapshot] = React.useState<Snapshot | null>(null)
   const [asofFilter, setAsofFilter] = React.useState<string>('')
+  const [snapshotLoading, setSnapshotLoading] = React.useState(false)
   const [ingestLoading, setIngestLoading] = React.useState(false)
   const [explainLoading, setExplainLoading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -30,6 +59,7 @@ export function App() {
   const [explainError, setExplainError] = React.useState<string | null>(null)
   const [telemetry, setTelemetry] = React.useState<Telemetry>({ pv: 0, visitors: 0, loading: true })
   const explainStreamRef = React.useRef<{ close: () => void } | null>(null)
+  const refreshReqRef = React.useRef(0)
 
   React.useEffect(() => {
     // Fire-and-forget telemetry (can be disabled server-side).
@@ -67,14 +97,48 @@ export function App() {
   }, [])
 
   async function refresh(nextAsof?: string) {
+    const reqId = ++refreshReqRef.current
+    setSnapshotLoading(true)
     setError(null)
-    const s = await api.snapshot(nextAsof)
-    setSnapshot(s)
+    try {
+      const s = await api.snapshot(nextAsof)
+      if (reqId !== refreshReqRef.current) return
+      setSnapshot(s)
+    } catch (e) {
+      if (reqId !== refreshReqRef.current) return
+      setError(String(e))
+    } finally {
+      if (reqId === refreshReqRef.current) setSnapshotLoading(false)
+    }
   }
 
   React.useEffect(() => {
-    refresh(asofFilter).catch((e) => setError(String(e)))
+    refresh(asofFilter)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [asofFilter])
+
+  React.useEffect(() => {
+    let alive = true
+    async function loadExplainCache() {
+      if (!snapshot?.asof) return
+      if (explainLoading) return
+      try {
+        const r = await api.explainCached(asofFilter || undefined)
+        if (!alive) return
+        if (r.cached && r.text) {
+          setExplainText(r.text)
+          setExplainError(null)
+        }
+      } catch {
+        // Cache is optional; ignore errors.
+      }
+    }
+
+    loadExplainCache()
+    return () => {
+      alive = false
+    }
+  }, [snapshot?.asof, asofFilter, explainLoading])
 
   async function runIngest() {
     setIngestLoading(true)
@@ -109,6 +173,12 @@ export function App() {
         onDone: () => {
           explainStreamRef.current = null
           setExplainLoading(false)
+          // best-effort refresh cached version (in case server cached the final text)
+          api.explainCached(asofFilter || undefined)
+            .then((r) => {
+              if (r.cached && r.text) setExplainText(r.text)
+            })
+            .catch(() => {})
         },
         onError: (err) => {
           explainStreamRef.current = null
@@ -116,12 +186,13 @@ export function App() {
           setExplainError(String(err))
         }
         },
-        asofFilter
+        asofFilter,
+        true
       )
     } catch (e) {
       // Fallback to non-stream if SSE creation fails
       try {
-        const r = await api.explain(asofFilter)
+        const r = await api.explain(asofFilter, true)
         setExplainText(r.text)
       } catch (e2) {
         setExplainError(String(e2))
@@ -156,6 +227,18 @@ export function App() {
 
   return (
     <div className="container vstack">
+      {snapshotLoading ? (
+        <div className="page-overlay" role="status" aria-live="polite">
+          <div className="page-overlay-card">
+            <div className="spinner" />
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 13 }}>加载中…</div>
+              <div className="muted" style={{ marginTop: 2 }}>正在切换到 {asofFilter || '最新'} 数据</div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="hstack" style={{ justifyContent: 'space-between' }}>
         <div className="vstack" style={{ gap: 6 }}>
           <div className="h1">Marco Regime Monitor</div>
@@ -193,7 +276,9 @@ export function App() {
             </button>
           </div>
           <button className="button" onClick={runIngest} disabled={ingestLoading || explainLoading}>运行采集/计算</button>
-          <button className="button" onClick={explain} disabled={explainLoading || ingestLoading}>LLM 解释（可选）</button>
+          <button className="button" onClick={explain} disabled={explainLoading || ingestLoading}>
+            {explainText ? '重新生成 LLM 解释' : 'LLM 解释（可选）'}
+          </button>
           {explainLoading ? (
             <button className="button" onClick={stopExplain}>停止</button>
           ) : null}
@@ -210,7 +295,7 @@ export function App() {
         {explainError ? <pre style={{ marginTop: 10 }}>{explainError}</pre> : null}
         {explainText ? (
           <div className="md" style={{ marginTop: 10 }}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{explainText}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{normalizeMarkdownish(explainText)}</ReactMarkdown>
           </div>
         ) : (
           <div className="muted" style={{ marginTop: 10 }}>点击“LLM 解释（可选）”生成解释（流式输出）。</div>
@@ -229,7 +314,21 @@ export function App() {
         </div>
         <DriversPanel regime={regime} />
         <div className="card">
-          <div className="muted">仓位模板（大类）</div>
+          <HoverHelp
+            title="仓位模板（大类）含义"
+            body={
+              '这些是策略层面的“风险敞口大类”权重（合计≈100%），用于表达当前 Regime 下的偏好：\n\n'
+              + '• Equity：股票/权益风险资产（含主要行业篮子）\n'
+              + '• Rates：利率类（以国债/久期暴露为主，用于防御/对冲）\n'
+              + '• Credit：信用类（公司债/高收益等信用利差风险）\n'
+              + '• Cash：现金/货币基金等低波动仓位\n'
+              + '• Gold&Commodities：黄金与大宗商品（通胀/风险事件对冲）\n\n'
+              + '注：Overlays（如 FX_HEDGE）是叠加层，不一定计入大类权重。'
+            }
+            delayMs={2000}
+          >
+            <div className="muted">仓位模板（大类）</div>
+          </HoverHelp>
           {allocation ? (
             <div className="vstack" style={{ marginTop: 10 }}>
               {Object.entries(allocation.asset_class_weights).map(([k, v]) => (
@@ -311,8 +410,6 @@ export function App() {
           valueDigits={2}
         />
       </div>
-
-      <div className="muted">提示：先点“运行采集/计算”，再刷新即可看到状态。</div>
 
       <div className="muted" style={{ fontSize: 12, opacity: 0.75 }}>
         {telemetry.disabled

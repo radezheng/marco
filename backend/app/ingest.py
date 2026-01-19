@@ -6,6 +6,7 @@ import pandas as pd
 import requests
 from sqlalchemy import func
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .db import SessionLocal, init_db
 from .indicator_defs import FRED_BASE_SERIES
@@ -16,7 +17,38 @@ from .allocations import template_for_regime
 
 
 def _upsert_observations(db, indicator_key: str, series: pd.Series, source: str = "fred") -> int:
-    # MVP: row-by-row upsert to keep dependencies minimal.
+    bind = db.get_bind()
+    is_postgres = bool(bind is not None and bind.dialect.name == "postgresql")
+
+    # Fast path: single-statement bulk upsert on Postgres.
+    if is_postgres:
+        rows = []
+        for d, v in series.items():
+            if pd.isna(v):
+                continue
+            rows.append({"indicator_key": indicator_key, "date": d, "value": float(v), "source": source})
+
+        if not rows:
+            return 0
+
+        # PostgreSQL has a hard limit on the number of bind parameters per statement (65535).
+        # Because SQLAlchemy may include Python-side defaults (e.g., created_at) as bound params,
+        # we batch to stay safely below the limit.
+        batch_size = 5000
+        total = 0
+        for i in range(0, len(rows), batch_size):
+            chunk = rows[i : i + batch_size]
+            stmt = pg_insert(Observation).values(chunk)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["indicator_key", "date"],
+                set_={"value": stmt.excluded.value, "source": stmt.excluded.source},
+            )
+            res = db.execute(stmt)
+            rc = int(res.rowcount or 0)
+            total += rc if rc > 0 else 0
+        return total
+
+    # Fallback: row-by-row upsert for non-Postgres engines.
     count = 0
     for d, v in series.items():
         if pd.isna(v):
@@ -73,7 +105,9 @@ def _write_regime_state(db, date: dt.date, regime: str, risk_score: float, templ
 
 
 def ingest_and_compute() -> dict:
+    print("[ingest] init_db: start")
     init_db()
+    print("[ingest] init_db: done")
 
     fetched: dict[str, pd.Series] = {}
     errors: dict[str, str] = {}
@@ -84,7 +118,10 @@ def ingest_and_compute() -> dict:
         except (requests.RequestException, ValueError, RuntimeError) as e:
             errors[key] = str(e)
 
+    print(f"[ingest] fetched_base={len(fetched)} errors={len(errors)}")
+
     with SessionLocal() as db:
+        print("[ingest] db session: opened")
         inserted = 0
         for key, s in fetched.items():
             inserted += _upsert_observations(db, key, s, source="fred")
@@ -147,6 +184,8 @@ def ingest_and_compute() -> dict:
 
         db.commit()
 
+        print(f"[ingest] observations committed: inserted_or_updated={inserted}")
+
         # Compute states on a date that exists across core series (some series lag)
         core_source_keys: list[str] = ["synthetic_liquidity_delta_w", "hy_oas", "funding_spread"]
         core_source_keys.append("vix_slope" if "vxv" in fetched else "vix")
@@ -159,6 +198,7 @@ def ingest_and_compute() -> dict:
 
         asof = min(max_dates) if max_dates else None
         if asof is None:
+            print("[ingest] no asof date available yet; exiting")
             return {
                 "inserted_or_updated": inserted,
                 "base_series_fetched": list(fetched.keys()),
@@ -280,6 +320,8 @@ def ingest_and_compute() -> dict:
         if tmpl:
             _write_regime_state(db, asof, regime, risk_score, tmpl.name, drivers)
         db.commit()
+
+        print(f"[ingest] computed regime={regime} asof={asof} risk_score={risk_score}")
 
         return {
             "inserted_or_updated": inserted,

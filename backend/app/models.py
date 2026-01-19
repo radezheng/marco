@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import Date, DateTime, Float, Index, Integer, JSON, String, UniqueConstraint
+from sqlalchemy import Date, DateTime, Float, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -76,3 +76,21 @@ class PageView(Base):
     user_agent: Mapped[str | None] = mapped_column(String(256), nullable=True)
     referrer: Mapped[str | None] = mapped_column(String(512), nullable=True)
     accept_language: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class LlmExplanation(Base):
+    __tablename__ = "llm_explanation"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asof: Mapped[dt.date] = mapped_column(Date, nullable=False, index=True)
+
+    # Stable hash of snapshot content (regime + drivers + indicators, etc.).
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=dt.datetime.utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=dt.datetime.utcnow,
+        onupdate=dt.datetime.utcnow,
+    )

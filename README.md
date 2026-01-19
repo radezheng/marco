@@ -56,6 +56,8 @@ nohup npm run dev -- --host 127.0.0.1 --port 5173 </dev/null > ../frontend.vite.
 
 后端见 [backend/.env.example](backend/.env.example)。
 
+如果你在用 Azure Database for PostgreSQL，也可以用 `PGHOST/PGUSER/PGPORT/PGDATABASE/PGPASSWORD` 这套变量：当 `DATABASE_URL` 为空时，后端会自动用这些变量拼接连接串。
+
 ### 访问统计（Telemetry，可选）
 
 为便于你自己判断“页面访问人数/次数”，后端提供一个非常轻量的访问统计记录：

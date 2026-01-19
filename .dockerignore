@@ -1,0 +1,36 @@
+.git
+.gitignore
+
+# Python
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Node
+**/node_modules
+**/dist
+**/.vite
+
+# Secrets
+.env
+backend/.env
+
+# Logs / pids
+*.log
+*.pid
+
+# Docker compose volumes (if any)
+**/pgdata
+
+# Misc
+.DS_Store
+.idea
+.vscode

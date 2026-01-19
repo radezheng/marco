@@ -37,6 +37,14 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   return (await resp.json()) as T
 }
 
+export type ExplainCached = {
+  asof: string
+  cached: boolean
+  text: string | null
+  snapshot_hash?: string
+  updated_at?: string | null
+}
+
 export type ExplainStream = {
   close: () => void
 }
@@ -65,13 +73,18 @@ export const api = {
   series: (key: string, days = 365, asof?: string) =>
     http<SeriesPoint[]>(withQuery(`/api/observations/${encodeURIComponent(key)}`, { days, asof })),
   ingestRun: () => http<Record<string, unknown>>('/api/ingest/run', { method: 'POST' }),
-  explain: (asof?: string) => http<{ asof: string; text: string }>(withQuery('/api/chat/explain', { asof }), { method: 'POST' }),
+  explainCached: (asof?: string) => http<ExplainCached>(withQuery('/api/chat/explain/cached', { asof })),
+  explain: (asof?: string, force?: boolean) =>
+    http<{ asof: string; text: string; cached?: boolean }>(
+      withQuery('/api/chat/explain', { asof, force: force ? 1 : undefined }),
+      { method: 'POST' }
+    ),
   explainStream: (handlers: {
     onDelta: (delta: string) => void
     onDone: () => void
     onError: (err: Error) => void
-  }, asof?: string): ExplainStream => {
-    const es = new EventSource(withQuery('/api/chat/explain/stream', { asof }))
+  }, asof?: string, force?: boolean): ExplainStream => {
+    const es = new EventSource(withQuery('/api/chat/explain/stream', { asof, force: force ? 1 : undefined }))
     es.onmessage = (ev) => {
       try {
         const payload = JSON.parse(ev.data)
