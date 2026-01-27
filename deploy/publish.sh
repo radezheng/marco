@@ -21,6 +21,7 @@ usage() {
 Usage:
   ./deploy/publish.sh [TAG] [--no-config]
   ./deploy/publish.sh --no-config [TAG]
+  ./deploy/publish.sh --only-job [TAG] [--no-config]
 
 If TAG is omitted, defaults to YYYYMMDDHHMM (to minute).
 USAGE
@@ -47,6 +48,8 @@ az_retry() {
 
 TAG=""
 SYNC_CONFIG=1
+UPDATE_APP=1
+UPDATE_JOBS=1
 
 for arg in "$@"; do
   case "$arg" in
@@ -56,6 +59,10 @@ for arg in "$@"; do
       ;;
     --no-config)
       SYNC_CONFIG=0
+      ;;
+    --only-job|--only-jobs)
+      UPDATE_APP=0
+      UPDATE_JOBS=1
       ;;
     --*)
       echo "Unknown option: $arg" >&2
@@ -89,6 +96,10 @@ cd "$ROOT_DIR"
 
 if [[ "${SYNC_CONFIG:-1}" == "0" ]]; then
   SYNC_CONFIG=0
+fi
+
+if [[ $UPDATE_APP -eq 0 ]]; then
+  echo "==> Mode: jobs only (skip Container App update)"
 fi
 
 echo "==> Building image in ACR: ${ACR_NAME}.azurecr.io/${IMAGE_REPO}:${TAG}"
@@ -144,63 +155,71 @@ if [[ $SYNC_CONFIG -eq 1 && -f backend/.env ]]; then
   source backend/.env
   set +a
 
-  # App secrets
-  secrets=()
-  if [[ -n "${PGPASSWORD:-}" ]]; then secrets+=("pgpassword=${PGPASSWORD}"); fi
-  if [[ -n "${TELEMETRY_SALT:-}" ]]; then secrets+=("telemetrysalt=${TELEMETRY_SALT}"); fi
-  if [[ -n "${AZURE_OPENAI_API_KEY:-}" ]]; then secrets+=("aoai-key=${AZURE_OPENAI_API_KEY}"); fi
+  if [[ $UPDATE_APP -eq 1 ]]; then
+    # App secrets
+    secrets=()
+    if [[ -n "${PGPASSWORD:-}" ]]; then secrets+=("pgpassword=${PGPASSWORD}"); fi
+    if [[ -n "${TELEMETRY_SALT:-}" ]]; then secrets+=("telemetrysalt=${TELEMETRY_SALT}"); fi
+    if [[ -n "${AZURE_OPENAI_API_KEY:-}" ]]; then secrets+=("aoai-key=${AZURE_OPENAI_API_KEY}"); fi
 
-  if [[ ${#secrets[@]} -gt 0 ]]; then
-    az containerapp secret set -g "$RG" -n "$APP_NAME" --secrets "${secrets[@]}" >/dev/null
+    if [[ ${#secrets[@]} -gt 0 ]]; then
+      az containerapp secret set -g "$RG" -n "$APP_NAME" --secrets "${secrets[@]}" >/dev/null
+    fi
   fi
 
-  # Job secrets (only what it needs)
-  job_secrets=()
-  if [[ -n "${PGPASSWORD:-}" ]]; then job_secrets+=("pgpassword=${PGPASSWORD}"); fi
-  if [[ ${#job_secrets[@]} -gt 0 ]]; then
-    az containerapp job secret set -g "$RG" -n "$JOB_NAME" --secrets "${job_secrets[@]}" >/dev/null
-    if [[ "$ENABLE_SCHEDULE_JOB" == "1" ]]; then
-      if az containerapp job show -g "$RG" -n "$SCHEDULE_JOB_NAME" >/dev/null 2>&1; then
-        az_retry az containerapp job secret set -g "$RG" -n "$SCHEDULE_JOB_NAME" --secrets "${job_secrets[@]}" >/dev/null
+  if [[ $UPDATE_JOBS -eq 1 ]]; then
+    # Job secrets (only what it needs)
+    job_secrets=()
+    if [[ -n "${PGPASSWORD:-}" ]]; then job_secrets+=("pgpassword=${PGPASSWORD}"); fi
+    if [[ ${#job_secrets[@]} -gt 0 ]]; then
+      az containerapp job secret set -g "$RG" -n "$JOB_NAME" --secrets "${job_secrets[@]}" >/dev/null
+      if [[ "$ENABLE_SCHEDULE_JOB" == "1" ]]; then
+        if az containerapp job show -g "$RG" -n "$SCHEDULE_JOB_NAME" >/dev/null 2>&1; then
+          az_retry az containerapp job secret set -g "$RG" -n "$SCHEDULE_JOB_NAME" --secrets "${job_secrets[@]}" >/dev/null
+        fi
       fi
     fi
   fi
 
-  # App env vars
-  app_env=()
-  if [[ -n "${PGHOST:-}" ]]; then app_env+=("PGHOST=${PGHOST}"); fi
-  if [[ -n "${PGUSER:-}" ]]; then app_env+=("PGUSER=${PGUSER}"); fi
-  if [[ -n "${PGPORT:-}" ]]; then app_env+=("PGPORT=${PGPORT}"); fi
-  if [[ -n "${PGDATABASE:-}" ]]; then app_env+=("PGDATABASE=${PGDATABASE}"); fi
-  if [[ -n "${PGSSLMODE:-}" ]]; then app_env+=("PGSSLMODE=${PGSSLMODE}"); fi
-  if [[ -n "${PGPASSWORD:-}" ]]; then app_env+=("PGPASSWORD=secretref:pgpassword"); fi
+  if [[ $UPDATE_APP -eq 1 ]]; then
+    # App env vars
+    app_env=()
+    if [[ -n "${PGHOST:-}" ]]; then app_env+=("PGHOST=${PGHOST}"); fi
+    if [[ -n "${PGUSER:-}" ]]; then app_env+=("PGUSER=${PGUSER}"); fi
+    if [[ -n "${PGPORT:-}" ]]; then app_env+=("PGPORT=${PGPORT}"); fi
+    if [[ -n "${PGDATABASE:-}" ]]; then app_env+=("PGDATABASE=${PGDATABASE}"); fi
+    if [[ -n "${PGSSLMODE:-}" ]]; then app_env+=("PGSSLMODE=${PGSSLMODE}"); fi
+    if [[ -n "${PGPASSWORD:-}" ]]; then app_env+=("PGPASSWORD=secretref:pgpassword"); fi
 
-  if [[ -n "${TELEMETRY_ENABLED:-}" ]]; then app_env+=("TELEMETRY_ENABLED=${TELEMETRY_ENABLED}"); fi
-  if [[ -n "${TELEMETRY_SALT:-}" ]]; then app_env+=("TELEMETRY_SALT=secretref:telemetrysalt"); fi
+    if [[ -n "${TELEMETRY_ENABLED:-}" ]]; then app_env+=("TELEMETRY_ENABLED=${TELEMETRY_ENABLED}"); fi
+    if [[ -n "${TELEMETRY_SALT:-}" ]]; then app_env+=("TELEMETRY_SALT=secretref:telemetrysalt"); fi
 
-  if [[ -n "${AZURE_OPENAI_ENDPOINT:-}" ]]; then app_env+=("AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}"); fi
-  if [[ -n "${AZURE_OPENAI_API_KEY:-}" ]]; then app_env+=("AZURE_OPENAI_API_KEY=secretref:aoai-key"); fi
-  if [[ -n "${AZURE_OPENAI_DEPLOYMENT:-}" ]]; then app_env+=("AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT}"); fi
-  if [[ -n "${AZURE_OPENAI_API_VERSION:-}" ]]; then app_env+=("AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION}"); fi
+    if [[ -n "${AZURE_OPENAI_ENDPOINT:-}" ]]; then app_env+=("AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}"); fi
+    if [[ -n "${AZURE_OPENAI_API_KEY:-}" ]]; then app_env+=("AZURE_OPENAI_API_KEY=secretref:aoai-key"); fi
+    if [[ -n "${AZURE_OPENAI_DEPLOYMENT:-}" ]]; then app_env+=("AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT}"); fi
+    if [[ -n "${AZURE_OPENAI_API_VERSION:-}" ]]; then app_env+=("AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION}"); fi
 
-  if [[ ${#app_env[@]} -gt 0 ]]; then
-    az containerapp update -g "$RG" -n "$APP_NAME" --set-env-vars "${app_env[@]}" >/dev/null
+    if [[ ${#app_env[@]} -gt 0 ]]; then
+      az containerapp update -g "$RG" -n "$APP_NAME" --set-env-vars "${app_env[@]}" >/dev/null
+    fi
   fi
 
-  # Job env vars
-  job_env=()
-  if [[ -n "${PGHOST:-}" ]]; then job_env+=("PGHOST=${PGHOST}"); fi
-  if [[ -n "${PGUSER:-}" ]]; then job_env+=("PGUSER=${PGUSER}"); fi
-  if [[ -n "${PGPORT:-}" ]]; then job_env+=("PGPORT=${PGPORT}"); fi
-  if [[ -n "${PGDATABASE:-}" ]]; then job_env+=("PGDATABASE=${PGDATABASE}"); fi
-  if [[ -n "${PGSSLMODE:-}" ]]; then job_env+=("PGSSLMODE=${PGSSLMODE}"); fi
-  if [[ -n "${PGPASSWORD:-}" ]]; then job_env+=("PGPASSWORD=secretref:pgpassword"); fi
+  if [[ $UPDATE_JOBS -eq 1 ]]; then
+    # Job env vars
+    job_env=()
+    if [[ -n "${PGHOST:-}" ]]; then job_env+=("PGHOST=${PGHOST}"); fi
+    if [[ -n "${PGUSER:-}" ]]; then job_env+=("PGUSER=${PGUSER}"); fi
+    if [[ -n "${PGPORT:-}" ]]; then job_env+=("PGPORT=${PGPORT}"); fi
+    if [[ -n "${PGDATABASE:-}" ]]; then job_env+=("PGDATABASE=${PGDATABASE}"); fi
+    if [[ -n "${PGSSLMODE:-}" ]]; then job_env+=("PGSSLMODE=${PGSSLMODE}"); fi
+    if [[ -n "${PGPASSWORD:-}" ]]; then job_env+=("PGPASSWORD=secretref:pgpassword"); fi
 
-  if [[ ${#job_env[@]} -gt 0 ]]; then
-    az containerapp job update -g "$RG" -n "$JOB_NAME" --set-env-vars "${job_env[@]}" >/dev/null
-    if [[ "$ENABLE_SCHEDULE_JOB" == "1" ]]; then
-      if az containerapp job show -g "$RG" -n "$SCHEDULE_JOB_NAME" >/dev/null 2>&1; then
-        az_retry az containerapp job update -g "$RG" -n "$SCHEDULE_JOB_NAME" --set-env-vars "${job_env[@]}" >/dev/null
+    if [[ ${#job_env[@]} -gt 0 ]]; then
+      az containerapp job update -g "$RG" -n "$JOB_NAME" --set-env-vars "${job_env[@]}" >/dev/null
+      if [[ "$ENABLE_SCHEDULE_JOB" == "1" ]]; then
+        if az containerapp job show -g "$RG" -n "$SCHEDULE_JOB_NAME" >/dev/null 2>&1; then
+          az_retry az containerapp job update -g "$RG" -n "$SCHEDULE_JOB_NAME" --set-env-vars "${job_env[@]}" >/dev/null
+        fi
       fi
     fi
   fi
@@ -209,15 +228,23 @@ else
 fi
 
 echo "==> Updating Container App + Job images"
-az containerapp update -g "$RG" -n "$APP_NAME" --image "$IMAGE" >/dev/null
-az containerapp job update -g "$RG" -n "$JOB_NAME" --image "$IMAGE" >/dev/null
-if [[ "$ENABLE_SCHEDULE_JOB" == "1" ]]; then
-  if az containerapp job show -g "$RG" -n "$SCHEDULE_JOB_NAME" >/dev/null 2>&1; then
-    az_retry az containerapp job update -g "$RG" -n "$SCHEDULE_JOB_NAME" --image "$IMAGE" >/dev/null
+if [[ $UPDATE_APP -eq 1 ]]; then
+  az containerapp update -g "$RG" -n "$APP_NAME" --image "$IMAGE" >/dev/null
+fi
+
+if [[ $UPDATE_JOBS -eq 1 ]]; then
+  az containerapp job update -g "$RG" -n "$JOB_NAME" --image "$IMAGE" >/dev/null
+  if [[ "$ENABLE_SCHEDULE_JOB" == "1" ]]; then
+    if az containerapp job show -g "$RG" -n "$SCHEDULE_JOB_NAME" >/dev/null 2>&1; then
+      az_retry az containerapp job update -g "$RG" -n "$SCHEDULE_JOB_NAME" --image "$IMAGE" >/dev/null
+    fi
   fi
 fi
 
-FQDN="$(az containerapp show -g "$RG" -n "$APP_NAME" --query properties.configuration.ingress.fqdn -o tsv)"
-
 echo "==> Done"
-echo "App URL: https://${FQDN}"
+if [[ $UPDATE_APP -eq 1 ]]; then
+  FQDN="$(az containerapp show -g "$RG" -n "$APP_NAME" --query properties.configuration.ingress.fqdn -o tsv)"
+  echo "App URL: https://${FQDN}"
+else
+  echo "Updated jobs only (Container App not modified)."
+fi

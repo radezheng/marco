@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
+import time
 
 import pandas as pd
 import requests
@@ -11,6 +13,9 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .db import SessionLocal, init_db
 from .indicator_defs import FRED_BASE_SERIES
 from .models import IndicatorState, Observation, RegimeState
+from .models import CnIndustry
+from .sources.cn_industries import df_to_series, fetch_industry_hist_em, fetch_industry_list_em
+from .sources.cn_sector_fund_flow import df_to_main_net_series, fetch_sector_fund_flow_hist_em
 from .rules import realized_vol_annualized, state_from_quantiles, structure_state_from_slope
 from .sources.fred import align_on_dates, fetch_fred_series_csv, today_utc_date
 from .allocations import template_for_regime
@@ -44,8 +49,10 @@ def _upsert_observations(db, indicator_key: str, series: pd.Series, source: str 
                 set_={"value": stmt.excluded.value, "source": stmt.excluded.source},
             )
             res = db.execute(stmt)
-            rc = int(res.rowcount or 0)
-            total += rc if rc > 0 else 0
+            # Some DBAPIs (incl. psycopg3) may report rowcount=-1 for this pattern.
+            # Fall back to input size to keep the API's progress metrics meaningful.
+            rc = res.rowcount
+            total += len(chunk) if rc is None or rc < 0 else int(rc)
         return total
 
     # Fallback: row-by-row upsert for non-Postgres engines.
@@ -186,6 +193,128 @@ def ingest_and_compute() -> dict:
 
         print(f"[ingest] observations committed: inserted_or_updated={inserted}")
 
+        # Best-effort: CN industries (A-share sector rotation proxies)
+        cn_errors: dict[str, str] = {}
+        cn_inserted = 0
+        try:
+            enabled_raw = (os.getenv("CN_INDUSTRIES_ENABLED", "1") or "1").strip().lower()
+            enabled = enabled_raw not in {"0", "false", "no", "off"}
+            if not enabled:
+                industries = []
+            else:
+                industries = fetch_industry_list_em()
+
+            max_n = int((os.getenv("CN_INDUSTRIES_MAX", "0") or "0").strip() or 0)
+            if max_n > 0:
+                industries = industries[:max_n]
+
+            max_days = int((os.getenv("CN_INDUSTRIES_DAYS", "400") or "400").strip() or 400)
+            sleep_ms = int((os.getenv("CN_INDUSTRIES_SLEEP_MS", "150") or "150").strip() or 150)
+            if industries:
+                # Upsert meta
+                bind = db.get_bind()
+                is_postgres = bool(bind is not None and bind.dialect.name == "postgresql")
+                if is_postgres:
+                    rows = [{"code": it.code, "name": it.name, "source": "akshare_em"} for it in industries]
+                    stmt = pg_insert(CnIndustry).values(rows)
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["code"],
+                        set_={"name": stmt.excluded.name, "source": stmt.excluded.source},
+                    )
+                    db.execute(stmt)
+                else:
+                    for it in industries:
+                        existing = db.execute(select(CnIndustry).where(CnIndustry.code == it.code)).scalar_one_or_none()
+                        if existing is None:
+                            db.add(CnIndustry(code=it.code, name=it.name, source="akshare_em"))
+                        else:
+                            existing.name = it.name
+                            existing.source = "akshare_em"
+
+                db.commit()
+
+                # Incremental time-series upsert
+                today = today_utc_date()
+                for it in industries:
+                    try:
+                        close_key = f"cn_industry_close:{it.code}"
+                        last = db.execute(select(func.max(Observation.date)).where(Observation.indicator_key == close_key)).scalar_one_or_none()
+                        start = today - dt.timedelta(days=max_days)
+                        if last is not None and last >= start:
+                            start = last + dt.timedelta(days=1)
+
+                        # Nothing new to fetch.
+                        if start > today:
+                            continue
+
+                        # Avoid hitting the source too hard.
+                        time.sleep(max(0, sleep_ms) / 1000.0)
+                        # AkShare expects the board name as `symbol`.
+                        df = fetch_industry_hist_em(it.name, start=start, end=today)
+                        close, amount, ret = df_to_series(df)
+
+                        # Fund flow (main net) - fetched as full history; filtered by `start` for incremental write.
+                        try:
+                            flow_df = fetch_sector_fund_flow_hist_em(it.name)
+                            main_net = df_to_main_net_series(flow_df)
+                        except (requests.RequestException, RuntimeError, ValueError, KeyError, TypeError, TimeoutError):
+                            main_net = pd.Series(dtype=float)
+
+                        # If both price and flow are empty, treat it as a signal of source blocking or a transient upstream issue.
+                        if close.empty and main_net.empty:
+                            cn_errors[it.code] = "AkShare returned empty data (close+flow)"
+                            db.commit()
+                            continue
+
+                        if not close.empty:
+                            close = close.loc[close.index >= start]
+                            if not close.empty:
+                                cn_inserted += _upsert_observations(db, close_key, close, source="akshare_em")
+
+                        if not amount.empty:
+                            amount_key = f"cn_industry_amount:{it.code}"
+                            amount = amount.loc[amount.index >= start]
+                            if not amount.empty:
+                                cn_inserted += _upsert_observations(db, amount_key, amount, source="akshare_em")
+
+                        if not ret.empty:
+                            ret_key = f"cn_industry_return:{it.code}"
+                            ret = ret.loc[ret.index >= start]
+                            if not ret.empty:
+                                cn_inserted += _upsert_observations(db, ret_key, ret, source="akshare_em")
+
+                        if not main_net.empty:
+                            flow_key = f"cn_industry_flow_main_net:{it.code}"
+                            # Use a separate last-date tracking for fund flow.
+                            last_flow = db.execute(
+                                select(func.max(Observation.date)).where(Observation.indicator_key == flow_key)
+                            ).scalar_one_or_none()
+                            flow_start = start
+                            if last_flow is not None and last_flow >= flow_start:
+                                flow_start = last_flow + dt.timedelta(days=1)
+                            if flow_start <= today:
+                                main_net = main_net.loc[main_net.index >= flow_start]
+                                if not main_net.empty:
+                                    cn_inserted += _upsert_observations(db, flow_key, main_net, source="akshare_em")
+
+                        # Commit per industry to keep progress even if later ones fail.
+                        db.commit()
+                    except (requests.RequestException, RuntimeError, ValueError, KeyError, TypeError, TimeoutError) as e:  # pyright: ignore[reportBroadExceptionCaught]
+                        cn_errors[it.code] = str(e)
+                        db.rollback()
+        except (requests.RequestException, RuntimeError, ValueError, KeyError, TypeError, TimeoutError) as e:  # pyright: ignore[reportBroadExceptionCaught]
+            cn_errors["_cn_industries"] = str(e)
+
+        if cn_errors:
+            print(f"[ingest] cn_industries errors={len(cn_errors)}")
+
+        cn_latest_close_date = db.execute(
+            select(func.max(Observation.date)).where(Observation.indicator_key.like("cn_industry_close:%"))
+        ).scalar_one_or_none()
+        cn_latest_flow_date = db.execute(
+            select(func.max(Observation.date)).where(Observation.indicator_key.like("cn_industry_flow_main_net:%"))
+        ).scalar_one_or_none()
+
         # Compute states on a date that exists across core series (some series lag)
         core_source_keys: list[str] = ["synthetic_liquidity_delta_w", "hy_oas", "funding_spread"]
         core_source_keys.append("vix_slope" if "vxv" in fetched else "vix")
@@ -203,6 +332,13 @@ def ingest_and_compute() -> dict:
                 "inserted_or_updated": inserted,
                 "base_series_fetched": list(fetched.keys()),
                 "errors": errors,
+                "cn_industries": {
+                    "inserted_or_updated": cn_inserted,
+                    "errors": cn_errors,
+                    "error_count": len(cn_errors),
+                    "latest_close_date": str(cn_latest_close_date) if cn_latest_close_date else None,
+                    "latest_flow_date": str(cn_latest_flow_date) if cn_latest_flow_date else None,
+                },
                 "asof": None,
                 "regime": None,
                 "risk_score": None,
@@ -327,6 +463,13 @@ def ingest_and_compute() -> dict:
             "inserted_or_updated": inserted,
             "base_series_fetched": list(fetched.keys()),
             "errors": errors,
+            "cn_industries": {
+                "inserted_or_updated": cn_inserted,
+                "errors": cn_errors,
+                "error_count": len(cn_errors),
+                "latest_close_date": str(cn_latest_close_date) if cn_latest_close_date else None,
+                "latest_flow_date": str(cn_latest_flow_date) if cn_latest_flow_date else None,
+            },
             "asof": str(asof),
             "regime": regime,
             "risk_score": risk_score,

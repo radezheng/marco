@@ -28,6 +28,88 @@ export type Snapshot = {
 
 export type SeriesPoint = { date: string; value: number }
 
+export type CnIndustry = { code: string; name: string }
+
+export type CnTopItem = { code: string; name: string; value: number }
+
+export type CnTopResponse = {
+  asof: string
+  metric: 'return' | 'amount' | string
+  window_days: number
+  items: CnTopItem[]
+}
+
+export type CnSectorOverviewItem = {
+  code: string
+  name: string
+  main_net: number
+  flow_strength?: number | null
+  flow_5d?: number | null
+  flow_10d?: number | null
+  price_return_5d?: number | null
+  divergence_score?: number | null
+  state: string
+  rank: number
+  rank_change?: number | null
+}
+
+export type CnSectorOverview = {
+  asof: string
+  top_inflow: CnSectorOverviewItem[]
+  top_outflow: CnSectorOverviewItem[]
+  new_mainline?: Array<{
+    code: string
+    name: string
+    main_net: number
+    state: string
+    prev_state?: string | null
+    rotation_speed?: number | null
+    rank?: number | null
+    divergence_score?: number | null
+  }>
+  fading?: Array<{
+    code: string
+    name: string
+    main_net: number
+    state: string
+    prev_state?: string | null
+    rotation_speed?: number | null
+    rank?: number | null
+    divergence_score?: number | null
+  }>
+}
+
+export type CnSectorMatrixRow = { code: string; name: string; values: number[] }
+
+export type CnSectorMatrix = {
+  asof: string
+  dates: string[]
+  rows: CnSectorMatrixRow[]
+}
+
+export type CnSectorBreadth = {
+  asof: string
+  code: string
+  name: string
+  breadth: number
+  up: number
+  total: number
+}
+
+export type IngestRunResult = {
+  inserted_or_updated: number
+  base_series_fetched: string[]
+  errors: Record<string, string>
+  cn_industries: {
+    inserted_or_updated: number
+    errors: Record<string, string>
+  }
+  asof: string | null
+  regime: string | null
+  risk_score: number | null
+  core_states: Record<string, string>
+}
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, init)
   if (!resp.ok) {
@@ -72,7 +154,7 @@ export const api = {
   snapshot: (asof?: string) => http<Snapshot>(withQuery('/api/snapshot', { asof })),
   series: (key: string, days = 365, asof?: string) =>
     http<SeriesPoint[]>(withQuery(`/api/observations/${encodeURIComponent(key)}`, { days, asof })),
-  ingestRun: () => http<Record<string, unknown>>('/api/ingest/run', { method: 'POST' }),
+  ingestRun: () => http<IngestRunResult>('/api/ingest/run', { method: 'POST' }),
   explainCached: (asof?: string) => http<ExplainCached>(withQuery('/api/chat/explain/cached', { asof })),
   explain: (asof?: string, force?: boolean) =>
     http<{ asof: string; text: string; cached?: boolean }>(
@@ -119,7 +201,18 @@ export const api = {
       }
     ),
 
-  telemetryStats: (days = 0) => http<TelemetryStats>(withQuery('/api/telemetry/stats', { days }))
+  telemetryStats: (days = 0) => http<TelemetryStats>(withQuery('/api/telemetry/stats', { days })),
+
+  cnIndustries: () => http<CnIndustry[]>('/api/cn/industries'),
+  cnIndustriesTop: (metric: string, days = 20, n = 10, asof?: string) =>
+    http<CnTopResponse>(withQuery('/api/cn/industries/top', { metric, days, n, asof })),
+
+  cnSectorOverview: (n = 10, asof?: string) =>
+    http<CnSectorOverview>(withQuery('/api/cn/sector/overview', { n, asof })),
+  cnSectorMatrix: (days = 10, n = 20, direction: 'abs' | 'in' | 'out' = 'abs', asof?: string) =>
+    http<CnSectorMatrix>(withQuery('/api/cn/sector/matrix', { days, n, direction, asof })),
+  cnSectorBreadth: (code: string, asof?: string) =>
+    http<CnSectorBreadth>(withQuery('/api/cn/sector/breadth', { code, asof }))
 }
 
 export function getOrCreateSessionId(): string {

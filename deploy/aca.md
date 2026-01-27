@@ -46,6 +46,13 @@ chmod +x deploy/publish.sh
 # 也可以同时指定 tag
 ./deploy/publish.sh mytag --no-config
 
+# 只更新 ingest job（手动 job + 定时 job），不动 Web App（适合你只改了 ingest/采集逻辑）
+./deploy/publish.sh --only-job --no-config
+
+# 也支持指定 tag / 禁用 config 同步
+./deploy/publish.sh --only-job mytag
+./deploy/publish.sh --only-job --no-config mytag
+
 # 可用环境变量覆盖默认值
 # RG=rg-zgen APP_NAME=marco JOB_NAME=marco-ingest ACR_NAME=regzen IMAGE_REPO=marco ./deploy/publish.sh
 ```
@@ -251,3 +258,4 @@ az monitor log-analytics query --workspace "$WORKSPACE_ID" \
 ```
 
 如果你希望把 Postgres 也迁到 Azure（Flexible Server）并用私网访问（VNet），需要再补 Private Endpoint / DNS / egress 配置。
+把图一的一个人物加到图二的大合照，站后面一排靠左边，不改变样貌，发型和姿势，不能挡着其他人，图二的人物不能动, 把图二后面的红色桌子去掉。真实，自然，不能改变所有人的样貌，发型和衣着。

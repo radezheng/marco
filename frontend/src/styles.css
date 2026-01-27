@@ -9,6 +9,169 @@ a { color: inherit; }
 
 .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
 
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 160px;
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  padding: 10px;
+  background: rgba(255,255,255,0.03);
+  border-right: 1px solid rgba(255,255,255,0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar--collapsed {
+  width: 36px;
+  padding: 6px;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  position: relative;
+}
+
+.sidebar--collapsed .sidebar-brand {
+  padding: 6px 4px;
+}
+
+.sidebar-brand-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sidebar-logo {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: rgba(45,212,191,0.18);
+  border: 1px solid rgba(45,212,191,0.28);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+}
+
+.sidebar-brand-text {
+  font-weight: 900;
+  letter-spacing: 0.2px;
+}
+
+.sidebar--collapsed .sidebar-brand-text {
+  display: none;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar--collapsed .sidebar-nav {
+  gap: 3px;
+}
+
+.sidebar-item {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  border-radius: 12px;
+  padding: 8px 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+}
+
+.sidebar--collapsed .sidebar-item {
+  padding: 6px;
+  justify-content: center;
+}
+
+.sidebar-item:hover {
+  background: rgba(255,255,255,0.06);
+}
+
+.sidebar-item--active {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.12);
+}
+
+.sidebar-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: rgba(232,238,252,0.88);
+}
+
+.sidebar-label {
+  font-size: 13px;
+  font-weight: 650;
+  color: rgba(232,238,252,0.92);
+}
+
+.sidebar--collapsed .sidebar-label {
+  display: none;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  display: flex;
+  justify-content: center;
+}
+
+.sidebar-collapse {
+  width: 40px;
+  height: 36px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06);
+  color: rgba(232,238,252,0.85);
+  cursor: pointer;
+}
+
+.sidebar-collapse--top {
+  position: absolute;
+  left: -18px;
+  top: 4px;
+  margin-left: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: rgba(232,238,252,0.78);
+  font-weight: 800;
+}
+
+.sidebar-collapse--top:hover {
+  color: rgba(232,238,252,0.95);
+}
+
+.sidebar-collapse:hover {
+  background: rgba(255,255,255,0.10);
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+}
+
 .card {
   background: rgba(255,255,255,0.06);
   border: 1px solid rgba(255,255,255,0.10);
@@ -54,6 +217,136 @@ a { color: inherit; }
 
 .button:hover { background: rgba(255,255,255,0.12); }
 
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.04);
+}
+
+.segmented-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(232,238,252,0.86);
+  padding: 6px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.segmented-btn:hover {
+  background: rgba(255,255,255,0.06);
+  color: rgba(232,238,252,0.95);
+}
+
+.segmented-btn--active {
+  border-color: rgba(88, 201, 255, 0.55);
+  background: rgba(88, 201, 255, 0.14);
+  color: #e8eefc;
+}
+
+.sector-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  padding: 10px 10px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #e8eefc;
+  cursor: pointer;
+}
+
+.sector-row:hover {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.12);
+}
+
+.sector-name { font-size: 13px; font-weight: 700; }
+.sector-meta { display: inline-flex; gap: 8px; align-items: center; }
+.sector-state { font-size: 12px; color: rgba(232,238,252,0.75); }
+.sector-arrow { font-size: 12px; color: rgba(232,238,252,0.75); width: 24px; text-align: center; }
+.sector-value { font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 700; }
+
+.heatmap { width: 100%; overflow: auto; }
+.heatmap-header, .heatmap-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 6px;
+  align-items: center;
+}
+
+.heatmap-cell {
+  min-height: 26px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.04);
+}
+
+.heatmap-name {
+  min-width: 140px;
+  max-width: 180px;
+  padding: 6px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+
+.chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.9);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.chip--active {
+  border-color: rgba(88, 201, 255, 0.55);
+  background: rgba(88, 201, 255, 0.14);
+}
+
+.sector-mini {
+  margin-left: 8px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.72);
+}
+  text-overflow: ellipsis;
+}
+
+.heatmap-date {
+  min-width: 58px;
+  padding: 6px 8px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.heatmap-val {
+  min-width: 58px;
+}
+
+.heatmap-name-btn {
+  width: 100%;
+  text-align: left;
+  color: #e8eefc;
+  cursor: pointer;
+}
+
+.heatmap-name-btn:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+.heatmap-row--active .heatmap-name-btn {
+  border-color: rgba(255,255,255,0.22);
+  background: rgba(255,255,255,0.10);
+}
+
 .page-overlay {
   position: fixed;
   inset: 0;
@@ -77,12 +370,19 @@ a { color: inherit; }
 }
 
 .spinner {
+  display: inline-block;
   width: 20px;
   height: 20px;
   border-radius: 50%;
   border: 3px solid rgba(232,238,252,0.22);
   border-top-color: rgba(232,238,252,0.92);
   animation: spin 0.9s linear infinite;
+}
+
+.spinner--sm {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
 }
 
 @keyframes spin {

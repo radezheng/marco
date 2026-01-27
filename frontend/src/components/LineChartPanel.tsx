@@ -9,6 +9,7 @@ export function LineChartPanel(props: {
   seriesKey: string
   helpKey?: string
   asof?: string
+  days?: number
   valueFactor?: number
   valueUnit?: string
   valueDigits?: number
@@ -19,7 +20,7 @@ export function LineChartPanel(props: {
   React.useEffect(() => {
     let alive = true
     api
-      .series(props.seriesKey, 365 * 5, props.asof)
+      .series(props.seriesKey, props.days ?? 365 * 5, props.asof)
       .then((d) => {
         if (!alive) return
         setData(d)
@@ -32,7 +33,7 @@ export function LineChartPanel(props: {
     return () => {
       alive = false
     }
-  }, [props.seriesKey, props.asof])
+  }, [props.seriesKey, props.asof, props.days])
 
   const help = chartHelp[props.helpKey ?? props.seriesKey]
   const factor = props.valueFactor ?? 1

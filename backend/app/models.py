@@ -94,3 +94,27 @@ class LlmExplanation(Base):
         default=dt.datetime.utcnow,
         onupdate=dt.datetime.utcnow,
     )
+
+
+class CnIndustry(Base):
+    __tablename__ = "cn_industry"
+
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="akshare_em")
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
+
+
+class ApiCache(Base):
+    __tablename__ = "api_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cache_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    asof: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("cache_key", "asof", name="uq_api_cache_key_asof"),
+        Index("ix_api_cache_key_asof", "cache_key", "asof"),
+    )

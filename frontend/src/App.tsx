@@ -1,9 +1,11 @@
 import React from 'react'
-import { api, getOrCreateSessionId, IndicatorState, Snapshot } from './api'
+import { api, getOrCreateSessionId, IndicatorState, IngestRunResult, Snapshot } from './api'
 import { LineChartPanel } from './components/LineChartPanel'
 import { DriversPanel } from './components/DriversPanel.tsx'
 import { IndicatorCard } from './components/IndicatorCard.tsx'
 import { HoverHelp } from './components/HoverHelp'
+import { Sidebar, TabKey } from './components/Sidebar'
+import { ChinaIndustriesTab } from './tabs/ChinaIndustriesTab'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -49,10 +51,14 @@ function normalizeMarkdownish(input: string): string {
 }
 
 export function App() {
+  const [activeTab, setActiveTab] = React.useState<TabKey>('dashboard')
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(true)
+
   const [snapshot, setSnapshot] = React.useState<Snapshot | null>(null)
   const [asofFilter, setAsofFilter] = React.useState<string>('')
   const [snapshotLoading, setSnapshotLoading] = React.useState(false)
   const [ingestLoading, setIngestLoading] = React.useState(false)
+  const [ingestResult, setIngestResult] = React.useState<IngestRunResult | null>(null)
   const [explainLoading, setExplainLoading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [explainText, setExplainText] = React.useState<string | null>(null)
@@ -60,6 +66,34 @@ export function App() {
   const [telemetry, setTelemetry] = React.useState<Telemetry>({ pv: 0, visitors: 0, loading: true })
   const explainStreamRef = React.useRef<{ close: () => void } | null>(null)
   const refreshReqRef = React.useRef(0)
+
+  React.useEffect(() => {
+    try {
+      const c = window.localStorage.getItem('marco_sidebar_collapsed')
+      if (c === '1') setSidebarCollapsed(true)
+      if (c === '0') setSidebarCollapsed(false)
+      const t = window.localStorage.getItem('marco_active_tab')
+      if (t === 'dashboard' || t === 'cn-sectors') setActiveTab(t)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem('marco_sidebar_collapsed', sidebarCollapsed ? '1' : '0')
+    } catch {
+      // ignore
+    }
+  }, [sidebarCollapsed])
+
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem('marco_active_tab', activeTab)
+    } catch {
+      // ignore
+    }
+  }, [activeTab])
 
   React.useEffect(() => {
     // Fire-and-forget telemetry (can be disabled server-side).
@@ -143,14 +177,20 @@ export function App() {
   async function runIngest() {
     setIngestLoading(true)
     setError(null)
+    setIngestResult(null)
     setExplainText(null)
     setExplainError(null)
     try {
-      await api.ingestRun()
+      const r = await api.ingestRun()
+      setIngestResult(r)
       setAsofFilter('')
       await refresh('')
     } catch (e) {
-      setError(String(e))
+      const msg = String(e)
+      const hint = window.location.hostname && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+        ? '\n\n提示：线上环境不建议用这个按钮跑长任务（可能被网关超时截断）。推荐用 ACA Job：`az containerapp job start -g rg-zgen -n marco-ingest` 或等待定时 job。'
+        : ''
+      setError(msg + hint)
     } finally {
       setIngestLoading(false)
     }
@@ -225,198 +265,248 @@ export function App() {
 
   const indicatorMap = new Map<string, IndicatorState>(indicators.map((i: IndicatorState) => [i.indicator_key, i]))
 
-  return (
-    <div className="container vstack">
-      {snapshotLoading ? (
-        <div className="page-overlay" role="status" aria-live="polite">
-          <div className="page-overlay-card">
-            <div className="spinner" />
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 13 }}>加载中…</div>
-              <div className="muted" style={{ marginTop: 2 }}>正在切换到 {asofFilter || '最新'} 数据</div>
+  function renderDashboard() {
+    return (
+      <div className="container vstack">
+        {snapshotLoading ? (
+          <div className="page-overlay" role="status" aria-live="polite">
+            <div className="page-overlay-card">
+              <div className="spinner" />
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 13 }}>加载中…</div>
+                <div className="muted" style={{ marginTop: 2 }}>正在切换到 {asofFilter || '最新'} 数据</div>
+              </div>
             </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      <div className="hstack" style={{ justifyContent: 'space-between' }}>
-        <div className="vstack" style={{ gap: 6 }}>
-          <div className="h1">Marco Regime Monitor</div>
-          <div className="muted">Asof: {snapshot?.asof ?? '—'} · 数据源：免费官方（FRED/NYFed 等公开序列）</div>
-        </div>
-        <div className="hstack">
-          <div className="hstack" style={{ gap: 8 }}>
-            <div className="muted">回看日期</div>
-            <input
-              type="date"
-              value={asofFilter}
-              onChange={(e) => {
-                setExplainText(null)
-                setExplainError(null)
-                setAsofFilter(e.target.value)
-              }}
-              style={{
-                background: 'rgba(255,255,255,0.06)',
-                border: '1px solid rgba(255,255,255,0.12)',
-                color: '#e8eefc',
-                padding: '8px 10px',
-                borderRadius: 10
-              }}
-            />
+        <div className="hstack" style={{ justifyContent: 'space-between' }}>
+          <div className="vstack" style={{ gap: 6 }}>
+            <div className="h1">Marco Regime Monitor</div>
+            <div className="muted">
+              Asof: {snapshot?.asof ?? '—'} · 数据源：免费官方（FRED/NYFed 等公开序列）
+              <span title="Asof 取核心序列共同可用的最新日期；其中 WALCL 为周频，可能导致 asof 不会每天变化。"> · asof 口径</span>
+            </div>
+          </div>
+          <div className="hstack">
+            <div className="hstack" style={{ gap: 8 }}>
+              <div className="muted">回看日期</div>
+              <input
+                type="date"
+                value={asofFilter}
+                onChange={(e) => {
+                  setExplainText(null)
+                  setExplainError(null)
+                  setAsofFilter(e.target.value)
+                }}
+                style={{
+                  background: 'rgba(255,255,255,0.06)',
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  color: '#e8eefc',
+                  padding: '8px 10px',
+                  borderRadius: 10
+                }}
+              />
+              <button
+                className="button"
+                onClick={() => {
+                  setExplainText(null)
+                  setExplainError(null)
+                  setAsofFilter('')
+                }}
+                disabled={!asofFilter || ingestLoading || explainLoading}
+              >
+                最新
+              </button>
+            </div>
             <button
               className="button"
-              onClick={() => {
-                setExplainText(null)
-                setExplainError(null)
-                setAsofFilter('')
-              }}
-              disabled={!asofFilter || ingestLoading || explainLoading}
+              onClick={runIngest}
+              disabled={ingestLoading || explainLoading}
+              title="会抓取外部数据源（FRED 等）并写入 Postgres，然后计算指标状态与 Regime。线上可能较慢，推荐用 ACA Job 跑。"
             >
-              最新
+              {ingestLoading ? (
+                <span className="hstack" style={{ gap: 8 }}>
+                  <span className="spinner spinner--sm" />
+                  采集中…
+                </span>
+              ) : '运行采集/计算'}
             </button>
+            <button className="button" onClick={explain} disabled={explainLoading || ingestLoading}>
+              {explainText ? '重新生成 LLM 解释' : 'LLM 解释（可选）'}
+            </button>
+            {explainLoading ? (
+              <button className="button" onClick={stopExplain}>停止</button>
+            ) : null}
           </div>
-          <button className="button" onClick={runIngest} disabled={ingestLoading || explainLoading}>运行采集/计算</button>
-          <button className="button" onClick={explain} disabled={explainLoading || ingestLoading}>
-            {explainText ? '重新生成 LLM 解释' : 'LLM 解释（可选）'}
-          </button>
-          {explainLoading ? (
-            <button className="button" onClick={stopExplain}>停止</button>
-          ) : null}
         </div>
-      </div>
 
-      {error && <pre>{error}</pre>}
+        {error && <pre>{error}</pre>}
 
-      <div className="card">
-        <div className="hstack" style={{ justifyContent: 'space-between' }}>
-          <div className="h1">LLM 解释</div>
-          <div className="muted">{explainLoading ? 'streaming…' : 'markdown'}</div>
-        </div>
-        {explainError ? <pre style={{ marginTop: 10 }}>{explainError}</pre> : null}
-        {explainText ? (
-          <div className="md" style={{ marginTop: 10 }}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{normalizeMarkdownish(explainText)}</ReactMarkdown>
+        {ingestResult ? (
+          <div className="card">
+            <div className="hstack" style={{ justifyContent: 'space-between' }}>
+              <div className="h1">采集结果</div>
+              <div className="muted">asof: {ingestResult.asof ?? '—'}</div>
+            </div>
+            <div className="muted" style={{ marginTop: 6 }}>
+              写入(插入/更新)：{ingestResult.inserted_or_updated} · CN industries 写入：{ingestResult.cn_industries?.inserted_or_updated ?? 0}
+              · errors：{Object.keys(ingestResult.errors ?? {}).length + Object.keys(ingestResult.cn_industries?.errors ?? {}).length}
+            </div>
+            <details style={{ marginTop: 10 }}>
+              <summary className="muted">Raw JSON</summary>
+              <pre style={{ marginTop: 10 }}>{JSON.stringify(ingestResult, null, 2)}</pre>
+            </details>
           </div>
-        ) : (
-          <div className="muted" style={{ marginTop: 10 }}>点击“LLM 解释（可选）”生成解释（流式输出）。</div>
-        )}
-      </div>
+        ) : null}
 
-      <div className="grid grid-3">
         <div className="card">
-          <div className="muted">系统状态</div>
-          <div style={{ fontSize: 18, fontWeight: 700, marginTop: 6 }}>
-            {regime ? `状态 ${regime.regime} · ${regime.template_name}` : '—'}
+          <div className="hstack" style={{ justifyContent: 'space-between' }}>
+            <div className="h1">LLM 解释</div>
+            <div className="muted">{explainLoading ? 'streaming…' : 'markdown'}</div>
           </div>
-          <div className="muted" style={{ marginTop: 6 }}>
-            risk_score: {regime ? regime.risk_score.toFixed(1) : '—'}
-          </div>
-        </div>
-        <DriversPanel regime={regime} />
-        <div className="card">
-          <HoverHelp
-            title="仓位模板（大类）含义"
-            body={
-              '这些是策略层面的“风险敞口大类”权重（合计≈100%），用于表达当前 Regime 下的偏好：\n\n'
-              + '• Equity：股票/权益风险资产（含主要行业篮子）\n'
-              + '• Rates：利率类（以国债/久期暴露为主，用于防御/对冲）\n'
-              + '• Credit：信用类（公司债/高收益等信用利差风险）\n'
-              + '• Cash：现金/货币基金等低波动仓位\n'
-              + '• Gold&Commodities：黄金与大宗商品（通胀/风险事件对冲）\n\n'
-              + '注：Overlays（如 FX_HEDGE）是叠加层，不一定计入大类权重。'
-            }
-            delayMs={2000}
-          >
-            <div className="muted">仓位模板（大类）</div>
-          </HoverHelp>
-          {allocation ? (
-            <div className="vstack" style={{ marginTop: 10 }}>
-              {Object.entries(allocation.asset_class_weights).map(([k, v]) => (
-                <div key={k} className="hstack" style={{ justifyContent: 'space-between' }}>
-                  <div className="muted">{k}</div>
-                  <div style={{ width: 180, background: 'rgba(255,255,255,0.10)', borderRadius: 999, overflow: 'hidden' }}>
-                    <div style={{ width: `${Math.round(v * 100)}%`, height: 10, background: 'rgba(45,212,191,0.8)' }} />
-                  </div>
-                  <div style={{ fontVariantNumeric: 'tabular-nums' }}>{Math.round(v * 100)}%</div>
-                </div>
-              ))}
+          {explainError ? <pre style={{ marginTop: 10 }}>{explainError}</pre> : null}
+          {explainText ? (
+            <div className="md" style={{ marginTop: 10 }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{normalizeMarkdownish(explainText)}</ReactMarkdown>
             </div>
           ) : (
-            <div className="muted" style={{ marginTop: 10 }}>—</div>
+            <div className="muted" style={{ marginTop: 10 }}>点击“LLM 解释（可选）”生成解释（流式输出）。</div>
           )}
         </div>
-      </div>
 
-      <div className="card">
-        <div className="hstack" style={{ justifyContent: 'space-between' }}>
-          <div className="h1">指标状态（🟢🟡🔴）</div>
-          <div className="muted">以滚动历史分位数判定（默认 3 年窗口）</div>
+        <div className="grid grid-3">
+          <div className="card">
+            <div className="muted">系统状态</div>
+            <div style={{ fontSize: 18, fontWeight: 700, marginTop: 6 }}>
+              {regime ? `状态 ${regime.regime} · ${regime.template_name}` : '—'}
+            </div>
+            <div className="muted" style={{ marginTop: 6 }}>
+              risk_score: {regime ? regime.risk_score.toFixed(1) : '—'}
+            </div>
+          </div>
+          <DriversPanel regime={regime} />
+          <div className="card">
+            <HoverHelp
+              title="仓位模板（大类）含义"
+              body={
+                '这些是策略层面的“风险敞口大类”权重（合计≈100%），用于表达当前 Regime 下的偏好：\n\n'
+                + '• Equity：股票/权益风险资产（含主要行业篮子）\n'
+                + '• Rates：利率类（以国债/久期暴露为主，用于防御/对冲）\n'
+                + '• Credit：信用类（公司债/高收益等信用利差风险）\n'
+                + '• Cash：现金/货币基金等低波动仓位\n'
+                + '• Gold&Commodities：黄金与大宗商品（通胀/风险事件对冲）\n\n'
+                + '注：Overlays（如 FX_HEDGE）是叠加层，不一定计入大类权重。'
+              }
+              delayMs={2000}
+            >
+              <div className="muted">仓位模板（大类）</div>
+            </HoverHelp>
+            {allocation ? (
+              <div className="vstack" style={{ marginTop: 10 }}>
+                {Object.entries(allocation.asset_class_weights).map(([k, v]) => (
+                  <div key={k} className="hstack" style={{ justifyContent: 'space-between' }}>
+                    <div className="muted">{k}</div>
+                    <div style={{ width: 180, background: 'rgba(255,255,255,0.10)', borderRadius: 999, overflow: 'hidden' }}>
+                      <div style={{ width: `${Math.round(v * 100)}%`, height: 10, background: 'rgba(45,212,191,0.8)' }} />
+                    </div>
+                    <div style={{ fontVariantNumeric: 'tabular-nums' }}>{Math.round(v * 100)}%</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted" style={{ marginTop: 10 }}>—</div>
+            )}
+          </div>
         </div>
-        <div className="grid grid-3" style={{ marginTop: 12 }}>
-          {indicatorOrder.map((k) => {
-            const it = indicatorMap.get(k)
-            if (!it) return null
-            return (
-              <IndicatorCard key={k} item={it} />
-            )
-          })}
+
+        <div className="card">
+          <div className="hstack" style={{ justifyContent: 'space-between' }}>
+            <div className="h1">指标状态（🟢🟡🔴）</div>
+            <div className="muted">以滚动历史分位数判定（默认 3 年窗口）</div>
+          </div>
+          <div className="grid grid-3" style={{ marginTop: 12 }}>
+            {indicatorOrder.map((k) => {
+              const it = indicatorMap.get(k)
+              if (!it) return null
+              return (
+                <IndicatorCard key={k} item={it} />
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="grid grid-2">
+          <LineChartPanel
+            title="合成流动性（周变化）"
+            seriesKey="synthetic_liquidity_delta_w"
+            asof={asofFilter || undefined}
+            valueFactor={0.001}
+            valueUnit="bn USD"
+            valueDigits={1}
+          />
+          <LineChartPanel
+            title="信用压力（HY OAS）"
+            seriesKey="hy_oas"
+            asof={asofFilter || undefined}
+            valueFactor={100}
+            valueUnit="bp"
+            valueDigits={0}
+          />
+          <LineChartPanel
+            title="资金压力（SOFR - IORB/EFFR）"
+            seriesKey="funding_spread"
+            asof={asofFilter || undefined}
+            valueFactor={100}
+            valueUnit="bp"
+            valueDigits={1}
+          />
+          <LineChartPanel
+            title="美债实现波动（20D）"
+            seriesKey="treasury_realized_vol_20d"
+            asof={asofFilter || undefined}
+            valueUnit="% (ann.)"
+            valueDigits={2}
+          />
+          <LineChartPanel
+            title="VIX 结构（VIX - VXV）"
+            seriesKey="vix_slope"
+            asof={asofFilter || undefined}
+            valueUnit="pts"
+            valueDigits={2}
+          />
+          <LineChartPanel
+            title="美元强弱（Fed TWI Broad）"
+            seriesKey="usd_twi_broad"
+            asof={asofFilter || undefined}
+            valueUnit="index"
+            valueDigits={2}
+          />
+        </div>
+
+        <div className="muted" style={{ fontSize: 12, opacity: 0.75 }}>
+          {telemetry.disabled
+            ? '访问统计：已关闭'
+            : telemetry.loading
+              ? '访问统计：加载中…'
+              : `访问统计：总访问次数(PV) ${telemetry.pv} · 近似人数(UV) ${telemetry.visitors}`}
         </div>
       </div>
+    )
+  }
 
-      <div className="grid grid-2">
-        <LineChartPanel
-          title="合成流动性（周变化）"
-          seriesKey="synthetic_liquidity_delta_w"
-          asof={asofFilter || undefined}
-          valueFactor={0.001}
-          valueUnit="bn USD"
-          valueDigits={1}
-        />
-        <LineChartPanel
-          title="信用压力（HY OAS）"
-          seriesKey="hy_oas"
-          asof={asofFilter || undefined}
-          valueFactor={100}
-          valueUnit="bp"
-          valueDigits={0}
-        />
-        <LineChartPanel
-          title="资金压力（SOFR - IORB/EFFR）"
-          seriesKey="funding_spread"
-          asof={asofFilter || undefined}
-          valueFactor={100}
-          valueUnit="bp"
-          valueDigits={1}
-        />
-        <LineChartPanel
-          title="美债实现波动（20D）"
-          seriesKey="treasury_realized_vol_20d"
-          asof={asofFilter || undefined}
-          valueUnit="% (ann.)"
-          valueDigits={2}
-        />
-        <LineChartPanel
-          title="VIX 结构（VIX - VXV）"
-          seriesKey="vix_slope"
-          asof={asofFilter || undefined}
-          valueUnit="pts"
-          valueDigits={2}
-        />
-        <LineChartPanel
-          title="美元强弱（Fed TWI Broad）"
-          seriesKey="usd_twi_broad"
-          asof={asofFilter || undefined}
-          valueUnit="index"
-          valueDigits={2}
-        />
-      </div>
-
-      <div className="muted" style={{ fontSize: 12, opacity: 0.75 }}>
-        {telemetry.disabled
-          ? '访问统计：已关闭'
-          : telemetry.loading
-            ? '访问统计：加载中…'
-            : `访问统计：总访问次数(PV) ${telemetry.pv} · 近似人数(UV) ${telemetry.visitors}`}
+  return (
+    <div className="app-shell">
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        setCollapsed={setSidebarCollapsed}
+        active={activeTab}
+        setActive={setActiveTab}
+      />
+      <div className="content">
+        {activeTab === 'cn-sectors'
+          ? <ChinaIndustriesTab />
+          : renderDashboard()}
       </div>
     </div>
   )
